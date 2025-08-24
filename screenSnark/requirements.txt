@@ -1,0 +1,4 @@
+google-genai==1.30.0
+pyautogui==0.9.54
+pillow==11.3.0
+pync==2.0.3
