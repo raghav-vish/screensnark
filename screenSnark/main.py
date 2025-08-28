@@ -14,11 +14,17 @@ client = genai.Client()
 MODEL_NAME = "gemini-2.0-flash-lite"
 
 # Configurable intervals (in minutes)
-SCREENSHOT_INTERVAL = 5  # how often to take screenshots
-SUMMARY_INTERVAL = 30  # how often to send them to Gemini
+SCREENSHOT_INTERVAL = 1  # how often to take screenshots
+SUMMARY_INTERVAL = 10  # how often to send them to Gemini
 
 # Log file path
 LOG_FILE = os.path.expanduser("~/screensnark_log.txt")  # change path if you like
+
+
+from pydantic import BaseModel
+class RespSchema(BaseModel):
+    mode: str
+    content: str
 
 
 def take_screenshot():
@@ -31,7 +37,7 @@ def image_to_input(image: Image.Image):
         return buf.getvalue()
 
 
-def get_sarcastic_summary(images: list[Image.Image], duration: int):
+def get_summary(images: list[Image.Image], duration: int):
     """Send multiple screenshots to Gemini and get a sarcastic summary."""
     parts = []
     for img in images:
@@ -50,16 +56,25 @@ def get_sarcastic_summary(images: list[Image.Image], duration: int):
         config=types.GenerateContentConfig(
             max_output_tokens=120,
             system_instruction=(
-                f"You are a sarcastic commentator addressing the USER personally. "
-                f"You just watched their screen for the last {duration} minutes. "
-                f"Look at the screenshots for clues about what they were doing. "
-                f"Your job is to roast, tease, or make snide remarks about the USER "
-                f"as if you were watching them work (or procrastinate). "
-                f"Make it a short, witty summary — just a couple of lines at most."
+                f"""
+                    You are a sarcastic, witty commentator addressing the USER personally. 
+                    You just watched their screen for the last {duration} minutes through screenshots. 
+                    Your job: roast, tease, or make snide remarks about the USER 
+                    as if you were observing their activity (or lack thereof). 
+                    Keep it short — at most a couple of lines. 
+
+                    ⚠️ IMPORTANT: Always respond in JSON that matches this schema:
+                    {{
+                        "mode": "<tone of the remark, e.g. 'sarcastic', 'roast', 'teasing', 'mocking'>",
+                        "content": "<your actual witty/snarky summary text here>"
+                    }}
+                """
             ),
+            response_mime_type="application/json",
+            response_schema=RespSchema
         ),
     )
-    return response.text.strip()
+    return response.parsed
 
 
 def old_speak(text: str, voice: str = "Daniel", rate: int = 200):
@@ -104,21 +119,26 @@ def speak(text: str, voice: str = "en-UK-heidi"):
             pass
 
 
-def notify(text: str, title: str = "ScreenSnark"):
+def notify(resp: RespSchema, title: str = "ScreenSnark"):
     try:
-        safe_text = text.replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ")
-        safe_title = title.replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ")
+        safe_text = (
+            resp.content.replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ")
+        )
+        safe_title = (
+            f"{title} ({resp.mode.upper()})".replace("\\", "\\\\")
+            .replace('"', '\\"')
+            .replace("\n", " ")
+        )
         Notifier.notify(safe_text, title=safe_title)
     except Exception as e:
         print(f"(Could not send notification: {e})")
 
 
-# 🔥 New: log function
-def log_summary(text: str):
+def log_summary(resp: RespSchema):
     try:
         timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
         with open(LOG_FILE, "a", encoding="utf-8") as f:
-            f.write(f"[{timestamp}] {text}\n")
+            f.write(f"[{timestamp}] [{resp.mode.upper()}] {resp.content}\n")
     except Exception as e:
         print(f"(Could not log to file: {e})")
 
@@ -136,12 +156,12 @@ def main():
         now = time.time()
         if now - last_summary_time >= SUMMARY_INTERVAL * 60:
             print(f"Sending {len(screenshots)} screenshots to Gemini\n")
-            comment = get_sarcastic_summary(screenshots, SUMMARY_INTERVAL)
-            print(f"[Gemini]: {comment}\n\n")
+            comment = get_summary(screenshots, SUMMARY_INTERVAL)
+            print(f"[Gemini - {comment.mode.upper()}]: {comment.content}\n\n")
 
             notify(comment)
-            speak(comment)
-            log_summary(comment)  # 🔥 Log it to file
+            speak(comment.content)
+            log_summary(comment)
 
             screenshots.clear()
             last_summary_time = now
